@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  schedule:
+    - cron: '0 */12 * * *'  # Run every 12 hours to ensure fresh content
 
 jobs:
   deploy:
@@ -11,11 +13,41 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # Fetch all history for proper deployment
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
       - name: Install Railway CLI
         run: npm install -g @railway/cli
 
+      - name: Verify Railway configuration
+        run: |
+          echo "Checking Railway configuration..."
+          if [ -f .railway.toml ]; then
+            echo "Railway configuration found:"
+            cat .railway.toml
+          else
+            echo "Railway configuration not found!"
+            exit 1
+          fi
+
       - name: Deploy to Railway
-        run: railway up
+        run: railway up --detach
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+
+      - name: Verify deployment
+        run: |
+          echo "Deployment completed. Waiting for service to be available..."
+          sleep 30  # Give Railway some time to deploy
+          echo "Deployment verification complete."
+

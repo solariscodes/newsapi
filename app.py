@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 import os
 import json
+import time
+import traceback
+import requests
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 from database import NewsDatabase
@@ -10,9 +13,15 @@ import logging
 from collections import OrderedDict
 from fallback_data import get_fallback_articles, save_fallback_data
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, 
-                   format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# Configure logging - more verbose for Railway deployment
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('app.log')
+    ]
+)
 logger = logging.getLogger(__name__)
 
 # Initialize Flask app
@@ -26,6 +35,17 @@ db = NewsDatabase()
 # Function to run the scraper
 def run_scraper():
     logger.info("Starting scheduled scraping job")
+    logger.info(f"Current working directory: {os.getcwd()}")
+    logger.info(f"Files in current directory: {os.listdir('.')}")
+    logger.info(f"Environment: {'RAILWAY_ENVIRONMENT' in os.environ and 'Railway' or 'Local'}")
+    
+    # Check if we can access external sites
+    try:
+        test_response = requests.get("https://www.google.com", timeout=10)
+        logger.info(f"Internet connectivity test: {test_response.status_code}")
+    except Exception as e:
+        logger.error(f"Internet connectivity test failed: {str(e)}")
+    
     try:
         # Import the scraper modules directly
         from scraper import clear_data
@@ -58,15 +78,43 @@ def run_scraper():
         
         # Scrape articles (get as many as possible from each source)
         all_articles = []
+        success_count = 0
+        error_count = 0
+        
         for name, scraper in scrapers.items():
             try:
                 logger.info(f"Scraping from {name}")
-                articles = scraper.scrape(limit=None)  # No limit - get ALL articles from each source
+                # Add a retry mechanism for Railway environment
+                max_retries = 3
+                retry_count = 0
+                articles = []
+                
+                while retry_count < max_retries and not articles:
+                    try:
+                        # Limit to 5 articles per source for Railway to avoid rate limiting
+                        is_railway = 'RAILWAY_ENVIRONMENT' in os.environ
+                        limit = 5 if is_railway else None
+                        articles = scraper.scrape(limit=limit)
+                        if articles:
+                            break
+                    except Exception as retry_error:
+                        logger.warning(f"Retry {retry_count+1}/{max_retries} for {name} failed: {str(retry_error)}")
+                        retry_count += 1
+                        time.sleep(2)  # Wait before retrying
+                
                 if articles:
                     all_articles.extend(articles)
                     logger.info(f"Got {len(articles)} articles from {name}")
+                    success_count += 1
+                else:
+                    logger.error(f"Failed to get articles from {name} after {max_retries} retries")
+                    error_count += 1
             except Exception as e:
                 logger.error(f"Error scraping {name}: {str(e)}")
+                logger.error(traceback.format_exc())
+                error_count += 1
+        
+        logger.info(f"Scraping summary: {success_count} sources succeeded, {error_count} sources failed")
         
         # Add articles to database
         if all_articles:
@@ -77,6 +125,16 @@ def run_scraper():
             # Export to JSON
             article_count = db.export_to_json()
             logger.info(f"Exported {article_count} articles to JSON")
+            
+            # Log database and file status
+            logger.info(f"Database article count: {db.get_article_count()}")
+            if os.path.exists('gaming_news.json'):
+                logger.info(f"gaming_news.json size: {os.path.getsize('gaming_news.json')} bytes")
+                with open('gaming_news.json', 'r') as f:
+                    json_data = json.load(f)
+                    logger.info(f"JSON article count: {json_data.get('article_count', 0)}")
+            else:
+                logger.warning("gaming_news.json does not exist")
         else:
             logger.error("No articles were scraped. Checking if database already has articles")
             
@@ -84,6 +142,9 @@ def run_scraper():
             existing_count = db.get_article_count()
             if existing_count > 0:
                 logger.info(f"Database already has {existing_count} articles, skipping fallback data")
+                # Force export to JSON to ensure it's up to date
+                article_count = db.export_to_json()
+                logger.info(f"Re-exported {article_count} existing articles to JSON")
             else:
                 logger.warning("Database is empty, using fallback data as last resort")
                 # Use fallback data only if database is empty
@@ -96,12 +157,35 @@ def run_scraper():
                 logger.info(f"Exported {article_count} fallback articles to JSON")
     except Exception as e:
         logger.error(f"Error during scraping: {str(e)}")
-        import traceback
         logger.error(traceback.format_exc())
 
 # Set up scheduler
 scheduler = BackgroundScheduler()
 scheduler.add_job(run_scraper, 'interval', hours=3)  # Run every 3 hours
+
+# Add a health check endpoint that also triggers scraping
+@app.route('/health')
+def health_check():
+    """Health check endpoint that also triggers scraping if needed"""
+    # Check if we have articles in the database
+    article_count = db.get_article_count()
+    logger.info(f"Health check: {article_count} articles in database")
+    
+    # If we have fewer than 20 articles, trigger a scrape
+    if article_count < 20:
+        logger.info("Health check: Not enough articles, triggering scrape")
+        # Run in a background thread to avoid blocking the health check
+        import threading
+        scrape_thread = threading.Thread(target=run_scraper)
+        scrape_thread.daemon = True
+        scrape_thread.start()
+    
+    # Return health status
+    return jsonify({
+        "status": "healthy",
+        "article_count": article_count,
+        "timestamp": time.time()
+    })
 
 # Run scraper on startup to ensure we have fresh articles
 run_scraper()
@@ -130,23 +214,73 @@ def get_articles():
     offset = request.args.get('offset', default=0, type=int)
     source = request.args.get('source', default=None, type=str)
     
-    # Get articles from database
+    logger.info(f"API request: /articles with limit={limit}, offset={offset}, source={source}")
+    
+    # First check if we have a JSON file with articles
+    json_file_path = 'gaming_news.json'
+    if os.path.exists(json_file_path):
+        try:
+            with open(json_file_path, 'r', encoding='utf-8') as f:
+                json_data = json.load(f)
+                json_articles = json_data.get('articles', [])
+                logger.info(f"Found {len(json_articles)} articles in JSON file")
+                
+                # Filter by source if needed
+                if source:
+                    json_articles = [a for a in json_articles if a.get('source_name', '').lower() == source.lower()]
+                
+                # Apply pagination
+                total_count = len(json_articles)
+                paginated_articles = json_articles[offset:offset+limit] if limit else json_articles[offset:]
+                
+                # Format articles
+                formatted_articles = [
+                    OrderedDict([
+                        ("id", article.get('id', '')),
+                        ("title", article.get('title', '')),
+                        ("content", article.get('content', '')),
+                        ("source_name", article.get('source_name', '')),
+                        ("source_url", article.get('source_url', '')),
+                        ("image_url", article.get('image_url', '')),
+                        ("local_image_path", article.get('local_image_path', '')),
+                        ("scrape_timestamp", article.get('scrape_timestamp', ''))
+                    ]) for article in paginated_articles
+                ]
+                
+                logger.info(f"Returning {len(formatted_articles)} articles from JSON file")
+                return jsonify({
+                    "total": total_count,
+                    "offset": offset,
+                    "limit": limit,
+                    "articles": formatted_articles
+                })
+        except Exception as e:
+            logger.error(f"Error reading from JSON file: {str(e)}")
+            logger.error(traceback.format_exc())
+            # Continue to database as fallback
+    
+    # Get articles from database as fallback
+    logger.info("Falling back to database query")
     articles = db.get_all_articles(limit=limit, offset=offset, source=source)
     total_count = db.get_article_count(source=source)
+    logger.info(f"Found {len(articles)} articles in database (total: {total_count})")
     
     # If no articles found, use fallback data as last resort
     if not articles:
         logger.warning("No articles in database, using fallback data as last resort")
         articles = get_fallback_articles()
         total_count = len(articles)
+        logger.info(f"Using {total_count} fallback articles")
         
         # Try to add fallback articles to database in a background thread to avoid blocking
         def add_fallback_articles_background():
             try:
                 db.add_articles(articles)
                 db.export_to_json()
+                logger.info("Successfully added fallback articles to database and exported to JSON")
             except Exception as e:
                 logger.error(f"Failed to add fallback articles to database: {str(e)}")
+                logger.error(traceback.format_exc())
         
         import threading
         background_thread = threading.Thread(target=add_fallback_articles_background)
@@ -169,6 +303,7 @@ def get_articles():
     ]
     
     # Return response with the formatted articles
+    logger.info(f"Returning {len(formatted_articles)} articles from database")
     return jsonify({
         "total": total_count,
         "offset": offset,
