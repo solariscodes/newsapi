@@ -101,7 +101,7 @@ def run_scraper():
 
 # Set up scheduler
 scheduler = BackgroundScheduler()
-scheduler.add_job(run_scraper, 'interval', hours=6)  # Run every 6 hours
+scheduler.add_job(run_scraper, 'interval', hours=3)  # Run every 3 hours
 
 # API Routes
 @app.route('/')
@@ -123,7 +123,7 @@ def index():
 def get_articles():
     """Get all articles with optional pagination and filtering"""
     # Parse query parameters
-    limit = request.args.get('limit', default=None, type=int)  # Default to no limit
+    limit = request.args.get('limit', default=20, type=int)  # Default to 20 articles for better performance
     offset = request.args.get('offset', default=0, type=int)
     source = request.args.get('source', default=None, type=str)
     
@@ -131,39 +131,29 @@ def get_articles():
     articles = db.get_all_articles(limit=limit, offset=offset, source=source)
     total_count = db.get_article_count(source=source)
     
-    # If no articles found, try to run the scraper directly
+    # If no articles found, use fallback data as last resort
     if not articles:
-        logger.warning("No articles in database, trying to scrape directly")
-        try:
-            # Run the scraper directly to get fresh articles
-            run_scraper()
-            
-            # Try to get articles again
-            articles = db.get_all_articles(limit=limit, offset=offset, source=source)
-            total_count = db.get_article_count(source=source)
-            
-            # If still no articles, use fallback as last resort
-            if not articles:
-                logger.error("Still no articles after scraping, using fallback data as last resort")
-                articles = get_fallback_articles()
-                total_count = len(articles)
-                
-                # Try to add fallback articles to database
-                try:
-                    db.add_articles(articles)
-                    db.export_to_json()
-                except Exception as e:
-                    logger.error(f"Failed to add fallback articles to database: {str(e)}")
-        except Exception as e:
-            logger.error(f"Failed to scrape directly: {str(e)}")
-            # Use fallback data as last resort
-            articles = get_fallback_articles()
-            total_count = len(articles)
+        logger.warning("No articles in database, using fallback data as last resort")
+        articles = get_fallback_articles()
+        total_count = len(articles)
+        
+        # Try to add fallback articles to database in a background thread to avoid blocking
+        def add_fallback_articles_background():
+            try:
+                db.add_articles(articles)
+                db.export_to_json()
+            except Exception as e:
+                logger.error(f"Failed to add fallback articles to database: {str(e)}")
+        
+        import threading
+        background_thread = threading.Thread(target=add_fallback_articles_background)
+        background_thread.daemon = True
+        background_thread.start()
     
     # Format articles to include only necessary fields in the proper order
-    formatted_articles = []
-    for article in articles:
-        formatted_article = OrderedDict([
+    # Using list comprehension for better performance
+    formatted_articles = [
+        OrderedDict([
             ("id", article.get('id', '')),
             ("title", article.get('title', '')),
             ("content", article.get('content', '')),
@@ -172,14 +162,14 @@ def get_articles():
             ("image_url", article.get('image_url', '')),
             ("local_image_path", article.get('local_image_path', '')),
             ("scrape_timestamp", article.get('scrape_timestamp', ''))
-        ])
-        formatted_articles.append(formatted_article)
+        ]) for article in articles
+    ]
     
     # Return response with the formatted articles
     return jsonify({
         "total": total_count,
         "offset": offset,
-        "limit": limit if limit else total_count,
+        "limit": limit,
         "articles": formatted_articles
     })
 

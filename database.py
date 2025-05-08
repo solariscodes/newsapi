@@ -50,6 +50,10 @@ class NewsDatabase:
         )
         ''')
         
+        # Create indexes for better query performance
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_scrape_timestamp ON articles(scrape_timestamp DESC)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_source_name ON articles(source_name)')
+        
         # Create export_history table to track JSON exports
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS export_history (
@@ -150,7 +154,10 @@ class NewsDatabase:
         conn = self.connect()
         cursor = conn.cursor()
         
-        query = "SELECT * FROM articles"
+        # Select only the necessary fields to improve performance
+        query = """SELECT id, title, content, source_name, source_url, 
+                 image_url, local_image_path, local_content_path, scrape_timestamp 
+                 FROM articles"""
         params = []
         
         # Add source filter if provided
