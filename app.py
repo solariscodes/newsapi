@@ -56,12 +56,12 @@ def run_scraper():
             'engadget': EngadgetScraper()
         }
         
-        # Scrape articles (limit to 3 per source for faster deployment)
+        # Scrape articles (get as many as possible from each source)
         all_articles = []
         for name, scraper in scrapers.items():
             try:
                 logger.info(f"Scraping from {name}")
-                articles = scraper.scrape(3)  # Limit to 3 articles per source
+                articles = scraper.scrape(limit=30)  # Increased limit to 30 articles per source
                 if articles:
                     all_articles.extend(articles)
                     logger.info(f"Got {len(articles)} articles from {name}")
@@ -78,16 +78,22 @@ def run_scraper():
             article_count = db.export_to_json()
             logger.info(f"Exported {article_count} articles to JSON")
         else:
-            logger.error("No articles were scraped, using fallback data")
+            logger.error("No articles were scraped. Checking if database already has articles")
             
-            # Use fallback data
-            fallback_articles = get_fallback_articles()
-            new_count = db.add_articles(fallback_articles)
-            logger.info(f"Added {new_count} fallback articles to database")
-            
-            # Export fallback data to JSON
-            article_count = db.export_to_json()
-            logger.info(f"Exported {article_count} fallback articles to JSON")
+            # Check if database already has articles
+            existing_count = db.get_article_count()
+            if existing_count > 0:
+                logger.info(f"Database already has {existing_count} articles, skipping fallback data")
+            else:
+                logger.warning("Database is empty, using fallback data as last resort")
+                # Use fallback data only if database is empty
+                fallback_articles = get_fallback_articles()
+                new_count = db.add_articles(fallback_articles)
+                logger.info(f"Added {new_count} fallback articles to database")
+                
+                # Export fallback data to JSON
+                article_count = db.export_to_json()
+                logger.info(f"Exported {article_count} fallback articles to JSON")
     except Exception as e:
         logger.error(f"Error during scraping: {str(e)}")
         import traceback
@@ -125,18 +131,34 @@ def get_articles():
     articles = db.get_all_articles(limit=limit, offset=offset, source=source)
     total_count = db.get_article_count(source=source)
     
-    # If no articles found, use fallback data
+    # If no articles found, try to run the scraper directly
     if not articles:
-        logger.warning("No articles in database, using fallback data")
-        articles = get_fallback_articles()
-        total_count = len(articles)
-        
-        # Try to add fallback articles to database
+        logger.warning("No articles in database, trying to scrape directly")
         try:
-            db.add_articles(articles)
-            db.export_to_json()
+            # Run the scraper directly to get fresh articles
+            run_scraper()
+            
+            # Try to get articles again
+            articles = db.get_all_articles(limit=limit, offset=offset, source=source)
+            total_count = db.get_article_count(source=source)
+            
+            # If still no articles, use fallback as last resort
+            if not articles:
+                logger.error("Still no articles after scraping, using fallback data as last resort")
+                articles = get_fallback_articles()
+                total_count = len(articles)
+                
+                # Try to add fallback articles to database
+                try:
+                    db.add_articles(articles)
+                    db.export_to_json()
+                except Exception as e:
+                    logger.error(f"Failed to add fallback articles to database: {str(e)}")
         except Exception as e:
-            logger.error(f"Failed to add fallback articles to database: {str(e)}")
+            logger.error(f"Failed to scrape directly: {str(e)}")
+            # Use fallback data as last resort
+            articles = get_fallback_articles()
+            total_count = len(articles)
     
     # Format articles to include only necessary fields in the proper order
     formatted_articles = []
