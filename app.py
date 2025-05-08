@@ -8,6 +8,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 import subprocess
 import logging
 from collections import OrderedDict
+from fallback_data import get_fallback_articles, save_fallback_data
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
@@ -26,22 +27,71 @@ db = NewsDatabase()
 def run_scraper():
     logger.info("Starting scheduled scraping job")
     try:
-        # Run the scraper with database integration
-        result = subprocess.run(
-            ["python", "scraper.py", "--db"],
-            capture_output=True, 
-            text=True, 
-            check=True
-        )
-        logger.info(f"Scraper completed: {result.stdout}")
+        # Import the scraper modules directly
+        from scraper import clear_data
+        from scrapers.ign_scraper import IGNScraper
+        from scrapers.pcgamer_scraper import PCGamerScraper
+        from scrapers.gamespot_scraper import GameSpotScraper
+        from scrapers.eurogamer_scraper import EurogamerScraper
+        from scrapers.gamerant_scraper import GameRantScraper
+        from scrapers.polygon_scraper import PolygonScraper
+        from scrapers.kotaku_scraper import KotakuScraper
+        from scrapers.wccftech_scraper import WCCFTechScraper
+        from scrapers.thegamer_scraper import TheGamerScraper
+        from scrapers.engadget_scraper import EngadgetScraper
         
-        # Export the latest data to JSON for API consumers who prefer it
-        article_count = db.export_to_json()
-        logger.info(f"Exported {article_count} articles to JSON")
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Scraper failed: {e.stderr}")
+        logger.info("Scraping directly from app.py")
+        
+        # Initialize scrapers
+        scrapers = {
+            'ign': IGNScraper(),
+            'pcgamer': PCGamerScraper(),
+            'gamespot': GameSpotScraper(),
+            'eurogamer': EurogamerScraper(),
+            'gamerant': GameRantScraper(),
+            'polygon': PolygonScraper(),
+            'kotaku': KotakuScraper(),
+            'wccftech': WCCFTechScraper(),
+            'thegamer': TheGamerScraper(),
+            'engadget': EngadgetScraper()
+        }
+        
+        # Scrape articles (limit to 3 per source for faster deployment)
+        all_articles = []
+        for name, scraper in scrapers.items():
+            try:
+                logger.info(f"Scraping from {name}")
+                articles = scraper.scrape(3)  # Limit to 3 articles per source
+                if articles:
+                    all_articles.extend(articles)
+                    logger.info(f"Got {len(articles)} articles from {name}")
+            except Exception as e:
+                logger.error(f"Error scraping {name}: {str(e)}")
+        
+        # Add articles to database
+        if all_articles:
+            # Add to database
+            new_count = db.add_articles(all_articles)
+            logger.info(f"Added {new_count} new articles to database")
+            
+            # Export to JSON
+            article_count = db.export_to_json()
+            logger.info(f"Exported {article_count} articles to JSON")
+        else:
+            logger.error("No articles were scraped, using fallback data")
+            
+            # Use fallback data
+            fallback_articles = get_fallback_articles()
+            new_count = db.add_articles(fallback_articles)
+            logger.info(f"Added {new_count} fallback articles to database")
+            
+            # Export fallback data to JSON
+            article_count = db.export_to_json()
+            logger.info(f"Exported {article_count} fallback articles to JSON")
     except Exception as e:
         logger.error(f"Error during scraping: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
 
 # Set up scheduler
 scheduler = BackgroundScheduler()
@@ -74,6 +124,19 @@ def get_articles():
     # Get articles from database
     articles = db.get_all_articles(limit=limit, offset=offset, source=source)
     total_count = db.get_article_count(source=source)
+    
+    # If no articles found, use fallback data
+    if not articles:
+        logger.warning("No articles in database, using fallback data")
+        articles = get_fallback_articles()
+        total_count = len(articles)
+        
+        # Try to add fallback articles to database
+        try:
+            db.add_articles(articles)
+            db.export_to_json()
+        except Exception as e:
+            logger.error(f"Failed to add fallback articles to database: {str(e)}")
     
     # Format articles to include only necessary fields in the proper order
     formatted_articles = []
