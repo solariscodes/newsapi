@@ -1,7 +1,5 @@
 [build]
   builder = "NIXPACKS"
-  nixpacksConfigPath = "nixpacks.toml"
-  buildCommand = "pip install -r requirements.txt"
 
 [deploy]
   startCommand = "gunicorn app:app"
