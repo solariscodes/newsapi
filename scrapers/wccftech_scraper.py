@@ -50,7 +50,7 @@ class WCCFTechScraper(BaseScraper):
                 
                 for article in articles:
                     # If limit is None, get all articles, otherwise respect the limit
-            if limit is not None and len(article_links) >= limit:
+                    if limit is not None and len(article_links) >= limit:
                         break
                     
                     # Try different selectors for links
