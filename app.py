@@ -210,7 +210,7 @@ def index():
 def get_articles():
     """Get all articles with optional pagination and filtering"""
     # Parse query parameters
-    limit = request.args.get('limit', default=100, type=int)  # Default to 100 articles
+    limit = request.args.get('limit', default=None, type=int)  # No default limit
     offset = request.args.get('offset', default=0, type=int)
     source = request.args.get('source', default=None, type=str)
     
@@ -229,9 +229,9 @@ def get_articles():
                 if source:
                     json_articles = [a for a in json_articles if a.get('source_name', '').lower() == source.lower()]
                 
-                # Apply pagination
+                # Apply pagination - no default limit
                 total_count = len(json_articles)
-                paginated_articles = json_articles[offset:offset+limit] if limit else json_articles[offset:]
+                paginated_articles = json_articles[offset:offset+limit] if limit is not None else json_articles[offset:]
                 
                 # Format articles
                 formatted_articles = [
