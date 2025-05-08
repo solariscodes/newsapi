@@ -1,0 +1,13 @@
+[phases.setup]
+  aptPkgs = ["python3-dev", "default-libmysqlclient-dev", "build-essential"]
+
+[phases.install]
+  cmds = ["pip install --upgrade pip", "pip install -r requirements.txt"]
+
+[phases.build]
+  cmds = ["echo 'Building application...'"]
+
+[start]
+  cmd = "gunicorn app:app"
+  onFailure = "retry"
+  maxRetries = 3
