@@ -2,8 +2,10 @@
 import os
 import json
 import time
+import sys
 import traceback
 import requests
+from datetime import datetime
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 from database import NewsDatabase
@@ -14,12 +16,13 @@ from collections import OrderedDict
 from fallback_data import get_fallback_articles, save_fallback_data
 
 # Configure logging - more verbose for Railway deployment
+log_file = 'app.log'
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler('app.log')
+        logging.FileHandler(log_file)
     ]
 )
 logger = logging.getLogger(__name__)
@@ -91,9 +94,11 @@ def run_scraper():
                 
                 while retry_count < max_retries and not articles:
                     try:
-                        # Limit to 5 articles per source for Railway to avoid rate limiting
+                        # No limit on articles per source for Railway
                         is_railway = 'RAILWAY_ENVIRONMENT' in os.environ
-                        limit = 5 if is_railway else None
+                        # Log the environment
+                        logger.info(f"Scraping in {'Railway' if is_railway else 'Local'} environment")
+                        limit = None  # Get all articles regardless of environment
                         articles = scraper.scrape(limit=limit)
                         if articles:
                             break
@@ -201,7 +206,9 @@ def index():
             "GET /articles/<article_id>": "Get a specific article by ID",
             "GET /articles/sources": "Get list of available news sources",
             "GET /articles/search?q=<query>": "Search articles by keyword",
-            "GET /json": "Get the entire dataset as a static JSON file"
+            "GET /json": "Get the entire dataset as a static JSON file",
+            "GET /logs": "View application logs",
+            "GET /debug": "Get debug information about the environment"
         }
     }
     return jsonify(endpoints)
@@ -396,6 +403,71 @@ def serve_image(filename):
 def serve_content(filename):
     """Serve content files from the content directory"""
     return send_from_directory('content', filename)
+
+@app.route('/logs')
+def view_logs():
+    """View application logs"""
+    try:
+        if os.path.exists(log_file):
+            with open(log_file, 'r') as f:
+                logs = f.readlines()
+            # Get the last 500 lines (most recent logs)
+            logs = logs[-500:]
+            return jsonify({
+                "status": "success",
+                "log_count": len(logs),
+                "logs": logs
+            })
+        else:
+            return jsonify({
+                "status": "error",
+                "message": f"Log file {log_file} not found"
+            }), 404
+    except Exception as e:
+        logger.error(f"Error reading logs: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "message": f"Error reading logs: {str(e)}"
+        }), 500
+
+@app.route('/debug')
+def debug_info():
+    """Get debug information about the environment"""
+    try:
+        # Get information about the environment
+        env_info = {
+            "environment": "Railway" if 'RAILWAY_ENVIRONMENT' in os.environ else "Local",
+            "python_version": sys.version,
+            "working_directory": os.getcwd(),
+            "files_in_root": os.listdir('.'),
+            "content_files": os.listdir('content') if os.path.exists('content') else [],
+            "image_files": os.listdir('images') if os.path.exists('images') else [],
+            "database_exists": os.path.exists('news.db'),
+            "json_exists": os.path.exists('gaming_news.json'),
+            "json_size": os.path.getsize('gaming_news.json') if os.path.exists('gaming_news.json') else 0,
+            "article_count_in_db": db.get_article_count(),
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        
+        # If JSON file exists, get article count from it
+        if os.path.exists('gaming_news.json'):
+            try:
+                with open('gaming_news.json', 'r') as f:
+                    json_data = json.load(f)
+                    env_info["article_count_in_json"] = json_data.get('article_count', 0)
+            except Exception as e:
+                env_info["json_error"] = str(e)
+        
+        return jsonify({
+            "status": "success",
+            "debug_info": env_info
+        })
+    except Exception as e:
+        logger.error(f"Error getting debug info: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "message": f"Error getting debug info: {str(e)}"
+        }), 500
 
 # Main entry point
 if __name__ == "__main__":
