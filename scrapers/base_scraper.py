@@ -58,14 +58,14 @@ class BaseScraper(ABC):
         Scrape articles from the website
         
         Args:
-            limit (int): Maximum number of articles to scrape
+            limit (int or None): Maximum number of articles to scrape, None for unlimited
             
         Returns:
             list: List of article data
         """
         print(f"Scraping {self.name}...")
         
-        # Get article URLs
+        # Get article URLs - handle None limit case
         article_urls = self.get_article_urls(limit)
         
         if not article_urls:

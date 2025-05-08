@@ -26,7 +26,8 @@ class GameSpotScraper(BaseScraper):
             articles = soup.select("a[href*='/articles/']")
         
         for article in articles:
-            if len(article_links) >= limit:
+            # If limit is None, get all articles, otherwise respect the limit
+            if limit is not None and len(article_links) >= limit:
                 break
                 
             url = article.get("href")
@@ -36,7 +37,8 @@ class GameSpotScraper(BaseScraper):
                 if url not in article_links:  # Avoid duplicates
                     article_links.append(url)
         
-        return article_links[:limit]
+        return article_links[:limit]# If limit is None, return all articles, otherwise respect the limit
+        return article_links if limit is None else article_links[:limit]
     
     def scrape_article(self, url):
         soup = get_soup(url)

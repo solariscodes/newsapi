@@ -17,7 +17,8 @@ class PCGamerScraper(BaseScraper):
         articles = soup.select("div.listingResult")
         
         for article in articles:
-            if len(article_links) >= limit:
+            # If limit is None, get all articles, otherwise respect the limit
+            if limit is not None and len(article_links) >= limit:
                 break
                 
             link_tag = article.select_one("a.article-link")
@@ -27,7 +28,8 @@ class PCGamerScraper(BaseScraper):
                     url = self.base_url + url
                 article_links.append(url)
         
-        return article_links[:limit]
+        return article_links[:limit]# If limit is None, return all articles, otherwise respect the limit
+        return article_links if limit is None else article_links[:limit]
     
     def scrape_article(self, url):
         soup = get_soup(url)

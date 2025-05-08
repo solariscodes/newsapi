@@ -50,7 +50,8 @@ class PolygonScraper(BaseScraper):
                     continue
                 
                 for article in articles:
-                    if len(article_links) >= limit:
+                    # If limit is None, get all articles, otherwise respect the limit
+            if limit is not None and len(article_links) >= limit:
                         break
                     
                     # If the article itself is an <a> tag
@@ -92,7 +93,8 @@ class PolygonScraper(BaseScraper):
             ]
             article_links = fallback_urls[:limit]
         
-        return article_links[:limit]
+        return article_links[:limit]# If limit is None, return all articles, otherwise respect the limit
+        return article_links if limit is None else article_links[:limit]
     
     def scrape_article(self, url):
         try:

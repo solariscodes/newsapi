@@ -61,7 +61,7 @@ def run_scraper():
         for name, scraper in scrapers.items():
             try:
                 logger.info(f"Scraping from {name}")
-                articles = scraper.scrape(limit=30)  # Increased limit to 30 articles per source
+                articles = scraper.scrape(limit=None)  # No limit - get ALL articles from each source
                 if articles:
                     all_articles.extend(articles)
                     logger.info(f"Got {len(articles)} articles from {name}")
@@ -103,6 +103,9 @@ def run_scraper():
 scheduler = BackgroundScheduler()
 scheduler.add_job(run_scraper, 'interval', hours=3)  # Run every 3 hours
 
+# Run scraper on startup to ensure we have fresh articles
+run_scraper()
+
 # API Routes
 @app.route('/')
 def index():
@@ -123,7 +126,7 @@ def index():
 def get_articles():
     """Get all articles with optional pagination and filtering"""
     # Parse query parameters
-    limit = request.args.get('limit', default=20, type=int)  # Default to 20 articles for better performance
+    limit = request.args.get('limit', default=100, type=int)  # Default to 100 articles
     offset = request.args.get('offset', default=0, type=int)
     source = request.args.get('source', default=None, type=str)
     
